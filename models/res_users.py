@@ -2,7 +2,7 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 import json
-
+import logging
 import requests
 
 from odoo import api, fields, models
@@ -11,7 +11,7 @@ from odoo.addons.auth_signup.models.res_users import SignupError
 
 from odoo.addons import base
 base.models.res_users.USER_PRIVATE_FIELDS.append('oauth_access_token')
-
+_logger = logging.getLogger(__name__)
 class ResUsers(models.Model):
     _inherit = 'res.users'
 
@@ -35,10 +35,10 @@ class ResUsers(models.Model):
     @api.model
     def _auth_oauth_validate(self, provider, access_token):
         """ return the validation data corresponding to the access token """
-        print("===="+access_token+"====")
+        _logger.info(access_token)
         oauth_provider = self.env['auth.oauth.provider'].browse(provider)
-        validation = self._auth_oauth_rpc(oauth_provider.validation_endpoint, access_token, provider)
-        print("****"+json.dumps(validation))
+        validation = self._auth_oauth_rpc(oauth_provider.validation_endpoint, access_token, provider) 
+        _logger.info(json.dumps(validation))
         if validation.get("error"):
             raise Exception(validation['error'])
         if oauth_provider.data_endpoint:
