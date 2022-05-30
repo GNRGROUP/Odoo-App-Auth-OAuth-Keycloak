@@ -35,8 +35,10 @@ class ResUsers(models.Model):
     @api.model
     def _auth_oauth_validate(self, provider, access_token):
         """ return the validation data corresponding to the access token """
+        print("===="+access_token+"====")
         oauth_provider = self.env['auth.oauth.provider'].browse(provider)
         validation = self._auth_oauth_rpc(oauth_provider.validation_endpoint, access_token, provider)
+        print("****"+json.dumps(validation))
         if validation.get("error"):
             raise Exception(validation['error'])
         if oauth_provider.data_endpoint:
