@@ -22,7 +22,82 @@ class ResUsers(models.Model):
     _sql_constraints = [
         ('uniq_users_oauth_provider_oauth_uid', 'unique(oauth_provider_id, oauth_uid)', 'OAuth UID must be unique per provider'),
     ]
+    
+    # Broken Odoo:14 from upstream fix. (Docker image is not yet up to date)
+    # https://github.com/odoo/odoo/commit/44e88d195a14d60e6ec51b51afe214c4658c3882
+    @api.model
+    def _auth_oauth_validate(self, provider, access_token):
+        """ return the validation data corresponding to the access token """
+        oauth_provider = self.env['auth.oauth.provider'].browse(provider)
+        validation = self._auth_oauth_rpc(oauth_provider.validation_endpoint, access_token)
+        if validation.get("error"):
+            raise Exception(validation['error'])
+        if oauth_provider.data_endpoint:
+            data = self._auth_oauth_rpc(oauth_provider.data_endpoint, access_token)
+            validation.update(data)
+        # unify subject key, pop all possible and get most sensible. When this
+        # is reworked, BC should be dropped and only the `sub` key should be
+        # used (here, in _generate_signup_values, and in _auth_oauth_signin)
+        subject = next(filter(None, [
+            validation.pop(key, None)
+            for key in [
+                'sub', # standard
+                'id', # google v1 userinfo, facebook opengraph
+                'user_id', # google tokeninfo, odoo (tokeninfo)
+            ]
+        ]), None)
+        if not subject:
+            raise AccessDenied('Missing subject identity')
+        validation['user_id'] = subject
 
+        return validation
+
+    @api.model
+    def _generate_signup_values(self, provider, validation, params):
+        oauth_uid = validation['user_id']
+        email = validation.get('email', 'provider_%s_user_%s' % (provider, oauth_uid))
+        name = validation.get('name', email)
+        return {
+            'name': name,
+            'login': email,
+            'email': email,
+            'oauth_provider_id': provider,
+            'oauth_uid': oauth_uid,
+            'oauth_access_token': params['access_token'],
+            'active': True,
+        }
+
+    @api.model
+    def _auth_oauth_signin(self, provider, validation, params):
+        """ retrieve and sign in the user corresponding to provider and validated access token
+            :param provider: oauth provider id (int)
+            :param validation: result of validation of access token (dict)
+            :param params: oauth parameters (dict)
+            :return: user login (str)
+            :raise: AccessDenied if signin failed
+            This method can be overridden to add alternative signin methods.
+        """
+        oauth_uid = validation['user_id']
+        try:
+            oauth_user = self.search([("oauth_uid", "=", oauth_uid), ('oauth_provider_id', '=', provider)])
+            if not oauth_user:
+                raise AccessDenied()
+            assert len(oauth_user) == 1
+            oauth_user.write({'oauth_access_token': params['access_token']})
+            return oauth_user.login
+        except AccessDenied as access_denied_exception:
+            if self.env.context.get('no_user_creation'):
+                return None
+            state = json.loads(params['state'])
+            token = state.get('t')
+            values = self._generate_signup_values(provider, validation, params)
+            try:
+                _, login, _ = self.signup(values, token)
+                return login
+            except (SignupError, UserError):
+                raise access_denied_exception
+    # End Fix
+    
     @api.model
     def _auth_oauth_rpc(self, endpoint, access_token):
         return requests.get(endpoint, params={'access_token': access_token}).json()
@@ -34,11 +109,9 @@ class ResUsers(models.Model):
           return requests.get(endpoint, params={'access_token': access_token}).json()
     @api.model
     def _auth_oauth_validate(self, provider, access_token):
-        """ return the validation data corresponding to the access token """
-        _logger.info(access_token)
+        """ return the validation data corresponding to the access token """ 
         oauth_provider = self.env['auth.oauth.provider'].browse(provider)
-        validation = self._auth_oauth_rpc(oauth_provider.validation_endpoint, access_token, provider) 
-        _logger.info(json.dumps(validation))
+        validation = self._auth_oauth_rpc(oauth_provider.validation_endpoint, access_token, provider)  
         if validation.get("error"):
             raise Exception(validation['error'])
         if oauth_provider.data_endpoint:
